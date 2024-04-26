@@ -5,7 +5,9 @@ const path = require('path');
 
 const crypto = require('crypto');
 
-
+let context = {
+	lastFolderPath: null
+};
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 function getProjectIdentifier() {
 	if (!vscode.workspace.workspaceFolders) {
@@ -94,14 +96,17 @@ async function handleCreateThreadAndRun(assistantId, userPrompt) {
 	}
 }
 
-
-function executeAction(action, panel) {
+function executeAction(action, panel, context) {
 	switch (action.type) {
 		case 'createFolder':
-			createFolder(action.folderName);
+			context.lastFolderPath = createFolder(action.folderName);
 			break;
 		case 'createFile':
-			createFile(action.fileName, action.content);
+			if (!context.lastFolderPath) {
+				console.error("No folder path defined for file creation.");
+				return;
+			}
+			createFile(action.fileName, action.content, context.lastFolderPath);
 			break;
 		case 'editFile':
 			editFile(action.fileName, action.content);
@@ -114,6 +119,7 @@ function executeAction(action, panel) {
 			console.error("Unsupported action type:", action.type);
 	}
 }
+
 
 async function sendMessageToThread(threadId, userPrompt, panel, context) {
 	console.log('Sending message to thread:', threadId, 'with prompt:', userPrompt);
@@ -222,25 +228,27 @@ function getEffectiveRootPath() {
 
 function createFolder(folderName) {
 	const rootPath = getEffectiveRootPath();
-	if (!rootPath) return;
+	if (!rootPath) return null;
 
 	const folderPath = path.join(rootPath, folderName);
-	if (!fs.existsSync(folderPath)) {
-		fs.mkdirSync(folderPath, { recursive: true });
+	try {
+		fs.promises.mkdir(folderPath, { recursive: true });
 		vscode.window.showInformationMessage('Folder created: ' + folderPath);
+		return folderPath;
+	} catch (error) {
+		console.error("Failed to create folder:", error);
+		return null;
 	}
 }
 
-async function createFile(fileName, content, folderName) {
-	const rootPath = getEffectiveRootPath();
-	if (!rootPath) {
-		console.error("Root path is not defined. Cannot create file.");
+
+async function createFile(fileName, content, folderPath) {
+	if (!folderPath) {
+		console.error("Folder path is not defined. Cannot create file.");
 		return;
 	}
 
-	const filePath = path.join(rootPath, folderName, fileName);
-	console.log(`Attempting to write to file: ${filePath}`); // Debugging the file path
-
+	const filePath = path.join(folderPath, fileName);
 	try {
 		await fs.promises.writeFile(filePath, content, { flag: 'w' });
 		vscode.window.showInformationMessage(`File created successfully: ${filePath}`);
@@ -249,6 +257,7 @@ async function createFile(fileName, content, folderName) {
 		vscode.window.showErrorMessage(`Failed to create file: ${err.message}`);
 	}
 }
+
 
 
 function editFile(fileName, content) {
@@ -356,15 +365,18 @@ function handleResponse(rawResponse, panel) {
 	try {
 		const data = JSON.parse(extractJson(rawResponse));  // Assuming extractJson handles non-JSON cases internally
 		if (data.actions) {
-			data.actions.forEach(action => executeAction(action, panel));
+			let context = { lastFolderPath: null };
+			data.actions.forEach(action => {
+				executeAction(action, panel, context);
+			});
 		}
 		// Optionally update the UI with a summary or update if needed
-
 	} catch (error) {
 		vscode.window.showErrorMessage("Failed to process response: " + error.message);
 		console.error("Failed to process response:", error);
 	}
 }
+
 
 
 
