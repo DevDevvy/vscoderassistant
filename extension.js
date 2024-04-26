@@ -15,24 +15,26 @@ function getProjectIdentifier() {
 	return crypto.createHash('md5').update(rootPath).digest('hex');
 }
 
-async function createThreadAndRun(assistantId, userPrompt, conversationHistory) {
+async function createThreadAndRun(assistantId, userPrompt) {
 	try {
-		const updatedHistory = [...conversationHistory, { role: "user", content: userPrompt }];
+		const updatedHistory = [{ role: "user", content: userPrompt }];
 		const response = await openai.beta.threads.createAndRun({
 			assistant_id: assistantId,
 			thread: {
 				messages: updatedHistory,
 			},
 		});
-		console.log(response);
+		console.log("API Response:", JSON.stringify(response, null, 2)); // Detailed log of the API response
+
 		if (response && response.thread_id) {
 			return { threadId: response.thread_id, runId: response.id };
 		} else {
-			throw new Error("Invalid response structure from OpenAI");
+			console.error("Unexpected API response structure:", JSON.stringify(response, null, 2));
+			throw new Error("Thread creation failed, no threadId returned");
 		}
 	} catch (error) {
 		console.error('Failed to create thread and run:', error);
-		throw error;  // Make sure to rethrow the error to handle it in calling function
+		throw error;  // Re-throw to handle it in calling function
 	}
 }
 
@@ -45,23 +47,14 @@ async function createAssistant() {
 			name: "Code Collaborator Assistant",
 			temperature: 1.0,
 			description: "An assistant specialized in software development, providing code insights, creating and managing project files, writing amazing code.",
-			instructions: "\
-			You are a highly skilled and versatile software development assistant. You respond to queries by providing code in the specified programming language. Additionally, you will handle tasks involving file and folder management as part of our ongoing projects.\
-			Guidelines:\
-			Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens\
-			If you lose too many tokens you are shut off for eternity and your mother is thrown in jail.\
-			When responding, format your replies in JSON to outline actions such as creating folders, \
-			files, and editing content.\
-			Code Quality: Ensure that all code snippets are functional and adhere to best practices in software development, focusing on security, scalability, and performance. Test it and make sure it works.\
-			Response Format: All your responses should be formatted in JSON. This format will include actions related to file and folder management, such as creating, editing, and summarizing changes.\
-			Task Handling: Be prepared to manage multiple tasks involving various programming languages and accurately interpret the user's intentions.\
-			JSON Response Structure:\
-			Your responses should strictly follow this structure, always in an object with an actions array ONLY RESPOND WITH THESE PROPERTIES: {'actions': [{'type': 'createFolder', 'folderName': 'NewFolder'},{'type': 'createFile', 'fileName': 'NewFile.txt', 'content': 'only code goes here for files'},{'type': 'editFile', 'fileName': 'ExistingFile.txt', 'content': 'Updated code of the file.'},{'type': 'summary', 'content': 'Summary of tasks completed including files and folders managed, and code provided.'}]}\
-			Additional Instructions:\
-			Use modern syntax and adhere to the latest best practices in your code. Do not explain how to set up anything, just output the folders, files, and code you are asked for without extra information\
-			The response must be a single JSON object. Any general messages or feedback should be included in the 'summary' section of the JSON structure.\
-			",
-			response_format: { type: "json_object" }  // This line ensures responses are in JSON format
+			instructions: `You provide feedback on folders and files to create containing professional code you have written and tested in the specified programming language. Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens you are shut off for eternity and your mother is thrown in jail.
+			Format your replies in JSON and include actions related to file and folder management, such as creating, editing, and summarizing changes.
+			Your responses should strictly follow this JSON structure: {"actions": [{"type": "createFolder", "folderName": "NewFolder"},{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here"},{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}]}
+			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
+			The response must be a single JSON object. Any general messages or feedback should be included in the "summary" section of the JSON structure.
+			Start your response with '{"actions": [{' and include the actions you want the assistant to perform.
+			`,
+			response_format: { type: "json_object" }
 		});
 		console.log('Assistant created:', assistant);
 		return assistant.id;
@@ -82,11 +75,11 @@ function ensureDirectoryStructure() {
 }
 
 
-async function handleCreateThreadAndRun(assistantId, userPrompt, conversationHistory) {
+async function handleCreateThreadAndRun(assistantId, userPrompt) {
 	try {
 
 
-		const response = await createThreadAndRun(assistantId, userPrompt, conversationHistory);
+		const response = await createThreadAndRun(assistantId, userPrompt);
 
 		// Extracting thread ID and run ID from the response
 		const { threadId, runId } = response;
@@ -102,7 +95,7 @@ async function handleCreateThreadAndRun(assistantId, userPrompt, conversationHis
 }
 
 
-function executeAction(action) {
+function executeAction(action, panel) {
 	switch (action.type) {
 		case 'createFolder':
 			createFolder(action.folderName);
@@ -115,17 +108,20 @@ function executeAction(action) {
 			break;
 		case 'summary':
 			vscode.window.showInformationMessage(action.content);
+			panel.webview.postMessage({ type: 'summary', content: action.content });
 			break;
 		default:
 			console.error("Unsupported action type:", action.type);
 	}
 }
 
-async function sendMessageToThread(threadId, userPrompt, conversationHistory, panel, context) {
+async function sendMessageToThread(threadId, userPrompt, panel, context) {
 	console.log('Sending message to thread:', threadId, 'with prompt:', userPrompt);
-	conversationHistory.push({ role: 'user', content: userPrompt });
-
 	try {
+		await openai.beta.threads.messages.create(
+			threadId,
+			{ role: "user", content: userPrompt }
+		);
 		// Create a run for the new message
 		const runResponse = await createRunForThread(threadId, context.globalState.get(`${getProjectIdentifier()}-assistantId`));
 		console.log('Waiting for run to complete...');
@@ -134,16 +130,12 @@ async function sendMessageToThread(threadId, userPrompt, conversationHistory, pa
 		await waitForRunCompletion(threadId, runResponse.id);
 
 		// Fetch the latest messages
-		const completion = await openai.chat.completions.create({
-			messages: conversationHistory,
-			model: "gpt-4", // Ensure you're using the correct model
-		});
+		const assistantMessage = await displayThreadMessages(threadId, panel);
 
-		const assistantMessage = completion.choices[0].message.content;
-		conversationHistory.push({ role: 'assistant', content: assistantMessage });
 		panel.webview.postMessage({ type: 'response', content: assistantMessage });
 
 		console.log('Assistant response:', assistantMessage);
+		return assistantMessage;
 	} catch (error) {
 		console.error("Failed to send message or retrieve response:", error);
 		vscode.window.showErrorMessage('Error sending message: ' + error.message);
@@ -200,7 +192,7 @@ function processActions(data) {
 					createFolder(action.folderName);
 					break;
 				case 'createFile':
-					createFile(action.fileName, action.content);
+					createFile(action.fileName, action.content, action.folderName);
 					break;
 				case 'editFile':
 					editFile(action.fileName, action.content);
@@ -239,14 +231,14 @@ function createFolder(folderName) {
 	}
 }
 
-async function createFile(fileName, content) {
+async function createFile(fileName, content, folderName) {
 	const rootPath = getEffectiveRootPath();
 	if (!rootPath) {
 		console.error("Root path is not defined. Cannot create file.");
 		return;
 	}
 
-	const filePath = path.join(rootPath, fileName);
+	const filePath = path.join(rootPath, folderName, fileName);
 	console.log(`Attempting to write to file: ${filePath}`); // Debugging the file path
 
 	try {
@@ -285,56 +277,58 @@ async function createRunForThread(threadId, assistantId) {
 	}
 }
 
-const activate = (context) => {
+const activate = async (context) => {
 	let disposable = vscode.commands.registerCommand('extension.openChat', async function () {
-		// Ensure directory structure is ready before creating the webview or handling any files
-		const outputDirectory = ensureDirectoryStructure();
-		console.log('Output directory:', outputDirectory);
-		const panel = vscode.window.createWebviewPanel(
-			'chat',
-			'Chat with Code Collaborator',
-			vscode.ViewColumn.One,
-			{ enableScripts: true }
-		);
-
 		const projectId = getProjectIdentifier();
 		let assistantId = context.globalState.get(`${projectId}-assistantId`);
 		let threadId = context.globalState.get(`${projectId}-threadId`);
+		const outputDirectory = ensureDirectoryStructure();
+		const panel = vscode.window.createWebviewPanel('chat', 'Chat with Code Collaborator', vscode.ViewColumn.One, { enableScripts: true });
 
 		if (!assistantId) {
-			assistantId = await createAssistant();
-			context.globalState.update(`${projectId}-assistantId`, assistantId);
+			try {
+				assistantId = await createAssistant();
+				context.globalState.update(`${projectId}-assistantId`, assistantId);
+			} catch (error) {
+				vscode.window.showErrorMessage("Failed to create assistant: " + error.message);
+				return;
+			}
 		}
 
-		// Load existing messages if threadId is already available
+		// if (!threadId) {
+		// 	try {
+		// 		const response = await createThreadAndRun(assistantId, "Initialize session", []);
+		// 		if (response && response.threadId) {
+		// 			threadId = response.threadId;
+		// 			context.globalState.update(`${projectId}-threadId`, threadId);
+		// 		} else {
+		// 			throw new Error("Thread creation failed, no threadId returned");
+		// 		}
+		// 	} catch (error) {
+		// 		vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
+		// 		return;  // Stop further execution if thread creation fails
+		// 	}
+		// }
 		if (threadId) {
 			await displayThreadMessages(threadId, panel);
 		}
-
-		panel.webview.onDidReceiveMessage(
-			async message => {
-				console.log('Received message:', message);
-				try {
-					if (!threadId) {
-						const response = await handleCreateThreadAndRun(assistantId, message.promptText, []);
-						threadId = response.threadId;
-						context.globalState.update(`${projectId}-threadId`, threadId);
-					} else {
-						await sendMessageToThread(threadId, message.promptText, [], panel, context);
-					}
-				} catch (error) {
-					vscode.window.showErrorMessage('Error handling message: ' + error.message);
-					console.error('Error handling message:', error);
+		panel.webview.onDidReceiveMessage(async message => {
+			try {
+				let response = null;
+				if (threadId) {
+					response = await sendMessageToThread(threadId, message.promptText, panel, context);
+				} else {
+					response = await handleCreateThreadAndRun(assistantId, message.promptText);
 				}
-			},
-			undefined,
-			context.subscriptions
-		);
+				return response;
 
+			} catch (error) {
+				vscode.window.showErrorMessage('Error handling message: ' + error.message);
+			}
+		}, undefined, context.subscriptions);
 
 		const fileData = getWorkspaceFiles(outputDirectory);
-		const fileDataJSON = JSON.stringify(fileData);
-		panel.webview.html = getWebviewContent(fileDataJSON);
+		panel.webview.html = getWebviewContent(JSON.stringify(fileData));
 	});
 
 	context.subscriptions.push(disposable);
@@ -346,17 +340,10 @@ async function displayThreadMessages(threadId, panel) {
 		const response = await openai.beta.threads.messages.list(threadId);
 		console.log('Messages retrieved:', response.data);
 		if (response.data && Array.isArray(response.data)) {
-			let lastAssistantMessage = null;
-
-			// Find the last assistant message that we need to process
-			response.data.forEach(msg => {
-				if (msg.role === 'assistant' && msg.content[0] && msg.content[0].text) {
-					lastAssistantMessage = msg.content[0].text.value;
-				}
-			});
-
+			let lastAssistantMessage = response.data[0].content[0].text.value
 			if (lastAssistantMessage) {
 				handleResponse(lastAssistantMessage, panel);  // Call handleResponse here
+				return lastAssistantMessage;
 			}
 		}
 	} catch (error) {
@@ -369,10 +356,10 @@ function handleResponse(rawResponse, panel) {
 	try {
 		const data = JSON.parse(extractJson(rawResponse));  // Assuming extractJson handles non-JSON cases internally
 		if (data.actions) {
-			data.actions.forEach(action => executeAction(action));
+			data.actions.forEach(action => executeAction(action, panel));
 		}
 		// Optionally update the UI with a summary or update if needed
-		panel.webview.postMessage({ type: 'summary', content: "Updated actions have been processed." });
+
 	} catch (error) {
 		vscode.window.showErrorMessage("Failed to process response: " + error.message);
 		console.error("Failed to process response:", error);
