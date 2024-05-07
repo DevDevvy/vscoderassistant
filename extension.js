@@ -2,19 +2,10 @@ const vscode = require('vscode');
 const fs = require('fs');
 const OpenAI = require('openai');
 const path = require('path');
-<<<<<<< HEAD
 
 const crypto = require('crypto');
 
 
-=======
-
-const crypto = require('crypto');
-
-let context = {
-	lastFolderPath: null
-};
->>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 function getProjectIdentifier() {
 	if (!vscode.workspace.workspaceFolders) {
@@ -56,23 +47,24 @@ async function createAssistant() {
 			name: "Code Collaborator Assistant",
 			temperature: 1.0,
 			description: "An assistant specialized in software development, providing code insights, creating and managing project files, writing amazing code.",
-			instructions: `You provide feedback on folders and files to create containing professional code you have written and tested in the specified programming language. Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens you are shut off for eternity and your mother is thrown in jail.
-			Format your replies in JSON and include actions related to file and folder management, such as creating, editing, and summarizing changes.
-			Your responses should strictly follow this JSON structure: {"actions": [{"type": "createFolder", "folderName": "NewFolder"},{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here"},{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}]}
+			instructions: `You provide JSON output that suggests folders and files containing professional code you have written and tested in the specified programming 
+			language for the specified tasks. You are able to output multiple files in a folder (if a feature needs styling, output the feature file that imports a .css file you make in the same folder). 
+			Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens 
+			you are shut off for eternity and your mother is thrown in jail. Format your replies in JSON and include actions related to file and folder management, 
+			such as creating, editing, and summarizing changes. Your responses should strictly follow this JSON structure: 
+			{"actions":[
+				{"type": "createFolder", "folderName": "NewFolder", "path": "/"},
+				{"type": "createFolder", "folderName": "NewFolder2", "path": "/NewFolder"},
+				{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here", "path": "/NewFolder2"},
+				{"type": "createFile", "fileName": "NewFile.css", "content": "more code here", "path": "path/to/file"},
+				{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file.", "path": "/pathToFolder/file"},
+				{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}
+			]}
 			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
-<<<<<<< HEAD
 			You can make multiple files in a folder if needed. The response must be a single JSON object. Any general messages or feedback should be 
 			included in the "summary" section of the JSON structure as well as the summary of the actions taken and the code created. Take time to think about your answer.
-<<<<<<< HEAD
 			Try to determine if the code needs a new folder or can be put in an existing folder. Make sure all of your function names are highly semantic in order to give the best
-			idea of what that function does. Include a comment at the top of the file to summarize what is in the file. Start your response with '{"actions": [{' and include the actions you suggest to perform.
-=======
-			The response must be a single JSON object. Any general messages or feedback should be included in the "summary" section of the JSON structure.
-			Start your response with '{"actions": [{' and include the actions you want the assistant to perform.
->>>>>>> parent of 70c2006 (agent working and outputting folders/files)
-=======
-			Try to determine if the code needs a new folder or can be put in an existing folder. Start your response with '{"actions": [{' and include the actions you suggest to perform.
->>>>>>> parent of 39a0508 (ui better showing last task summary in project)
+			idea of what that function does. Include a comment at the top of the file to summarize what is in the file, including all function names. Start your response with '{"actions": [{' and include the actions you suggest to perform.
 			`,
 			response_format: { type: "json_object" }
 		});
@@ -113,38 +105,61 @@ async function handleCreateThreadAndRun(assistantId, userPrompt) {
 		console.error('Error handling the thread creation and run:', error);
 	}
 }
-
 function executeAction(action, panel, context) {
+	let fullPath;
+
 	switch (action.type) {
 		case 'createFolder':
-			context.lastFolderPath = createFolder(action.folderName);
+			context.lastFolderPath = createFolder(action.folderName, action.path);
 			break;
 		case 'createFile':
-			if (!context.lastFolderPath) {
+			fullPath = action.path ? path.join(getEffectiveRootPath(), action.path) : context.lastFolderPath;
+			if (!fullPath) {
 				console.error("No folder path defined for file creation.");
 				return;
 			}
-			createFile(action.fileName, action.content, context.lastFolderPath);
+			createFile(action.fileName, action.content, fullPath);
 			break;
 		case 'editFile':
-			editFile(action.fileName, action.content);
+			// fullPath = action.path ? path.join(getEffectiveRootPath(), action.path) : null;
+			// if (!fullPath) {
+			// 	console.error("Path for file editing is not defined.");
+			// 	return;
+			// }
+			editFile(action.fileName, action.content, action.path);
 			break;
 		case 'summary':
 			vscode.window.showInformationMessage(action.content);
-			panel.webview.postMessage({ type: 'summary', content: action.content });
+			if (panel && panel.webview) {
+				panel.webview.postMessage({ type: 'summary', content: action.content });
+			}
 			break;
 		default:
 			console.error("Unsupported action type:", action.type);
+	}
+}
+async function readFileContent(filePath) {
+	try {
+		const content = await fs.promises.readFile(filePath, 'utf8');
+		return content;
+	} catch (error) {
+		console.error("Failed to read file:", error);
+		vscode.window.showErrorMessage("Failed to read file: " + error.message);
+		return null; // Return null or throw an error based on how you want to handle this
 	}
 }
 
 
 async function sendMessageToThread(threadId, userPrompt, panel, context) {
 	console.log('Sending message to thread:', threadId, 'with prompt:', userPrompt);
+	const tree = buildFileStructureTree(getEffectiveRootPath());
+	const file = await readFileContent(userPrompt.filePath);
+
+	const promptWithTree = userPrompt.promptText + `- Here is the current file structure:\n + ${JSON.stringify(tree)} \n Please edit ${userPrompt.filePath} - here is the content:\n ${file}`;
 	try {
 		await openai.beta.threads.messages.create(
 			threadId,
-			{ role: "user", content: userPrompt }
+			{ role: "user", content: promptWithTree }
 		);
 		// Create a run for the new message
 		const runResponse = await createRunForThread(threadId, context.globalState.get(`${getProjectIdentifier()}-assistantId`));
@@ -190,7 +205,7 @@ async function waitForRunCompletion(threadId, runId) {
 				clearInterval(intervalId);
 				reject(error);
 			}
-		}, 1000); // Check every second
+		}, 7000); // Check every second
 	});
 }
 
@@ -207,41 +222,8 @@ function extractJson(response) {
 	throw new Error("No JSON found in the response or failed to extract JSON.");
 }
 
-<<<<<<< HEAD
 
-function processActions(data) {
-	if (data.actions) {
-		data.actions.forEach(action => {
-			switch (action.type) {
-				case 'createFolder':
-					createFolder(action.folderName);
-					break;
-				case 'createFile':
-					createFile(action.fileName, action.content, action.folderName);
-					break;
-				case 'editFile':
-					editFile(action.fileName, action.content);
-					break;
-				case 'summary':
-					vscode.window.showInformationMessage(action.content);
-					break;
-				default:
-					console.error("Unknown action type:", action.type);
-			}
-		});
-		console.log("Actions processed successfully.");
-	} else {
-		console.error("No actions found in JSON response.");
-	}
-}
 
-<<<<<<< HEAD
-return tree; 
-}
-=======
->>>>>>> parent of 70c2006 (agent working and outputting folders/files)
-
-=======
 // Helper function to get file statistics (could be expanded to include more detailed info)
 function getFileDetails(filePath) {
 	const stats = fs.statSync(filePath);
@@ -272,8 +254,7 @@ async function buildFileStructureTree(dirPath) {
 	return tree;
 }
 
-// Get the effective root path from the workspace
->>>>>>> parent of 39a0508 (ui better showing last task summary in project)
+
 function getEffectiveRootPath() {
 	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
 		return vscode.workspace.workspaceFolders[0].uri.fsPath;
@@ -283,32 +264,30 @@ function getEffectiveRootPath() {
 	}
 }
 
-function createFolder(folderName) {
+async function createFolder(folderName, folderPath = '/') {
 	const rootPath = getEffectiveRootPath();
 	if (!rootPath) return null;
 
-	const folderPath = path.join(rootPath, folderName);
+	const fullPath = path.join(rootPath, folderPath, folderName);
 	try {
-		fs.promises.mkdir(folderPath, { recursive: true });
-		vscode.window.showInformationMessage('Folder created: ' + folderPath);
-		return folderPath;
+		await fs.promises.mkdir(fullPath, { recursive: true });
+		vscode.window.showInformationMessage('Folder created: ' + fullPath);
+		return fullPath;
 	} catch (error) {
 		console.error("Failed to create folder:", error);
+		vscode.window.showErrorMessage("Failed to create folder: " + error.message);
 		return null;
 	}
 }
 
-
 async function createFile(fileName, content, folderPath) {
-	if (!folderPath) {
-		console.error("Folder path is not defined. Cannot create file.");
-		return;
-	}
+	const rootPath = getEffectiveRootPath();
+	if (!rootPath) return;
 
-	const filePath = path.join(folderPath, fileName);
+	const fullPath = path.isAbsolute(folderPath) ? path.join(folderPath, fileName) : path.join(rootPath, folderPath, fileName);
 	try {
-		await fs.promises.writeFile(filePath, content, { flag: 'w' });
-		vscode.window.showInformationMessage(`File created successfully: ${filePath}`);
+		await fs.promises.writeFile(fullPath, content, { flag: 'w' });
+		vscode.window.showInformationMessage(`File created successfully: ${fullPath}`);
 	} catch (err) {
 		console.error('Failed to create file:', err);
 		vscode.window.showErrorMessage(`Failed to create file: ${err.message}`);
@@ -316,20 +295,34 @@ async function createFile(fileName, content, folderPath) {
 }
 
 
+function editFile(fileName, content, filePath) {
+	if (!filePath) {
+		console.error("File path is not defined. Cannot edit file.");
+		vscode.window.showErrorMessage("File path is not defined. Cannot edit file.");
+		return;
+	}
 
-function editFile(fileName, content) {
-	const rootPath = getEffectiveRootPath();
-	if (!rootPath) return;
-
-	const filePath = path.join(rootPath, fileName);
-	fs.appendFile(filePath, content, err => {
+	// Check if the file exists before attempting to write
+	fs.access(filePath, fs.constants.F_OK, (err) => {
 		if (err) {
-			vscode.window.showErrorMessage('Failed to edit file: ' + err.message);
-		} else {
-			vscode.window.showInformationMessage('File edited successfully: ' + filePath);
+			console.error("Error accessing file:", err);
+			vscode.window.showErrorMessage("Error accessing file: " + filePath);
+			return;
 		}
+
+		// Proceed with writing to the file if it exists
+		fs.writeFile(filePath, content, err => {
+			if (err) {
+				console.error('Failed to edit file:', err);
+				vscode.window.showErrorMessage('Failed to edit file: ' + err.message);
+			} else {
+				vscode.window.showInformationMessage('File edited successfully: ' + filePath);
+			}
+		});
 	});
 }
+
+
 async function createRunForThread(threadId, assistantId) {
 	try {
 		const runResponse = await openai.beta.threads.runs.create(threadId, {
@@ -361,20 +354,20 @@ const activate = async (context) => {
 			}
 		}
 
-		// if (!threadId) {
-		// 	try {
-		// 		const response = await createThreadAndRun(assistantId, "Initialize session", []);
-		// 		if (response && response.threadId) {
-		// 			threadId = response.threadId;
-		// 			context.globalState.update(`${projectId}-threadId`, threadId);
-		// 		} else {
-		// 			throw new Error("Thread creation failed, no threadId returned");
-		// 		}
-		// 	} catch (error) {
-		// 		vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
-		// 		return;  // Stop further execution if thread creation fails
-		// 	}
-		// }
+		if (!threadId) {
+			try {
+				const response = await createThreadAndRun(assistantId, "Initialize session", []);
+				if (response && response.threadId) {
+					threadId = response.threadId;
+					context.globalState.update(`${projectId}-threadId`, threadId);
+				} else {
+					throw new Error("Thread creation failed, no threadId returned");
+				}
+			} catch (error) {
+				vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
+				return;  // Stop further execution if thread creation fails
+			}
+		}
 		if (threadId) {
 			await displayThreadMessages(threadId, panel);
 		}
@@ -382,7 +375,7 @@ const activate = async (context) => {
 			try {
 				let response = null;
 				if (threadId) {
-					response = await sendMessageToThread(threadId, message.promptText, panel, context);
+					response = await sendMessageToThread(threadId, message, panel, context);
 				} else {
 					response = await handleCreateThreadAndRun(assistantId, message.promptText);
 				}
@@ -502,17 +495,6 @@ function getWebviewContent(fileDataJSON) {
         window.addEventListener('message', event => {
 			const message = event.data;
 			switch (message.type) {
-<<<<<<< HEAD
-=======
-				case 'lastResponse':
-					if (message.content) {
-						const responseElement = document.createElement('div');
-						responseElement.textContent = message.content;
-						responseContainer.appendChild(responseElement);
-					} 
-					
-					break
->>>>>>> parent of 39a0508 (ui better showing last task summary in project)
 				case 'response':
 					const responseContainer = document.getElementById('responseContainer');
                 const responseElement = document.createElement('p');
@@ -528,25 +510,6 @@ function getWebviewContent(fileDataJSON) {
 					break;
 			}
 		});
-<<<<<<< HEAD
-		
-=======
-		document.addEventListener('DOMContentLoaded', function() {
-			const previousState = vscode.getState();
-			let lastResponse;
-
-			if (previousState) {
-				lastResponse = previousState.lastResponse;
-			}
-
-			vscode.postMessage({
-				command: 'fetchLastResponse',
-				lastResponse: lastResponse
-			});
-		});
->>>>>>> parent of 39a0508 (ui better showing last task summary in project)
-		
-
         function sendMessage() {
             const input = document.getElementById('chatInput');
             const selectedFile = document.getElementById('fileList').value;
@@ -563,10 +526,6 @@ function getWebviewContent(fileDataJSON) {
 
 
 
-<<<<<<< HEAD
-=======
-
->>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 function getWorkspaceFiles(rootPath) {
 	let workspaceFiles = [];
 	let files = getAllFiles(rootPath);
