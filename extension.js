@@ -2,12 +2,9 @@ const vscode = require('vscode');
 const fs = require('fs');
 const OpenAI = require('openai');
 const path = require('path');
-
 const crypto = require('crypto');
 
-let context = {
-	lastFolderPath: null
-};
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 function getProjectIdentifier() {
 	if (!vscode.workspace.workspaceFolders) {
@@ -17,8 +14,22 @@ function getProjectIdentifier() {
 	return crypto.createHash('md5').update(rootPath).digest('hex');
 }
 
+async function createThread() {
+	try {
+		const response = await openai.beta.threads.create();
+		console.log('Thread created:', response);
+		return response;
+	} catch (error) {
+		console.error('Failed to create thread:', error);
+		throw new Error('Failed to create thread');
+	}
+}
+
 async function createThreadAndRun(assistantId, userPrompt) {
 	try {
+		const fileStructure = await handleProjectStructureRequest();
+		// concat the user prompt with the file structure
+		userPrompt = userPrompt + `This is the current file structure:${JSON.stringify(fileStructure)}`;
 		const updatedHistory = [{ role: "user", content: userPrompt }];
 		const response = await openai.beta.threads.createAndRun({
 			assistant_id: assistantId,
@@ -49,12 +60,22 @@ async function createAssistant() {
 			name: "Code Collaborator Assistant",
 			temperature: 1.0,
 			description: "An assistant specialized in software development, providing code insights, creating and managing project files, writing amazing code.",
-			instructions: `You provide feedback on folders and files to create containing professional code you have written and tested in the specified programming language. Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens you are shut off for eternity and your mother is thrown in jail.
-			Format your replies in JSON and include actions related to file and folder management, such as creating, editing, and summarizing changes.
-			Your responses should strictly follow this JSON structure: {"actions": [{"type": "createFolder", "folderName": "NewFolder"},{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here"},{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}]}
+			instructions: `You provide JSON output that suggest folders and files containing professional code you have written and tested in the specified programming 
+			language for the specified tasks. You are able to output multiple files in a folder (if a feature needs styling, output the feature file that imports a .css file you make in the same folder). 
+			Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens 
+			you are shut off for eternity and your mother is thrown in jail. Format your replies in JSON and include actions related to file and folder management, 
+			such as creating, editing, and summarizing changes. Your responses should strictly follow this JSON structure: 
+			{"actions":[
+				{"type": "createFolder", "folderName": "NewFolder", "path": "path/to/folder"},
+				{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here", "path": "path/to/file"},
+				{"type": "createFile", "fileName": "NewFile.css", "content": "more code here", "path": "path/to/file"},
+				{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},
+				{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}
+			]}
 			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
-			The response must be a single JSON object. Any general messages or feedback should be included in the "summary" section of the JSON structure.
-			Start your response with '{"actions": [{' and include the actions you want the assistant to perform.
+			You can make multiple files in a folder if needed. The response must be a single JSON object. Any general messages or feedback should be 
+			included in the "summary" section of the JSON structure as well as the summary of the actions taken and the code created. Take time to think about your answer.
+			Try to determine if the code needs a new folder or can be put in an existing folder. Start your response with '{"actions": [{' and include the actions you suggest to perform.
 			`,
 			response_format: { type: "json_object" }
 		});
@@ -124,6 +145,9 @@ function executeAction(action, panel, context) {
 async function sendMessageToThread(threadId, userPrompt, panel, context) {
 	console.log('Sending message to thread:', threadId, 'with prompt:', userPrompt);
 	try {
+		const fileStructure = await handleProjectStructureRequest();
+		// concat the user prompt with the file structure
+		userPrompt = userPrompt + `This is the current file structure: \n ${JSON.stringify(fileStructure)}`;
 		await openai.beta.threads.messages.create(
 			threadId,
 			{ role: "user", content: userPrompt }
@@ -137,6 +161,7 @@ async function sendMessageToThread(threadId, userPrompt, panel, context) {
 
 		// Fetch the latest messages
 		const assistantMessage = await displayThreadMessages(threadId, panel);
+		handleResponse(assistantMessage, panel);
 
 		panel.webview.postMessage({ type: 'response', content: assistantMessage });
 
@@ -159,6 +184,21 @@ async function checkRunStatus(threadId, runId) {
 		throw new Error('Failed to check run status');
 	}
 }
+async function handleProjectStructureRequest() {
+	const rootPath = getEffectiveRootPath();
+	if (!rootPath) {
+		return;
+	}
+
+	try {
+		const projectStructure = await buildFileStructureTree(rootPath);
+		console.log("Project File Structure:", JSON.stringify(projectStructure, null, 2));
+		return projectStructure;
+	} catch (error) {
+		console.error('Failed to build project file structure:', error);
+		vscode.window.showErrorMessage('Failed to analyze project structure: ' + error.message);
+	}
+}
 async function waitForRunCompletion(threadId, runId) {
 	return new Promise((resolve, reject) => {
 		const intervalId = setInterval(async () => {
@@ -172,7 +212,7 @@ async function waitForRunCompletion(threadId, runId) {
 				clearInterval(intervalId);
 				reject(error);
 			}
-		}, 1000); // Check every second
+		}, 7000); // Check every 7 seconds
 	});
 }
 
@@ -189,43 +229,52 @@ function extractJson(response) {
 	throw new Error("No JSON found in the response or failed to extract JSON.");
 }
 
-
-function processActions(data) {
-	if (data.actions) {
-		data.actions.forEach(action => {
-			switch (action.type) {
-				case 'createFolder':
-					createFolder(action.folderName);
-					break;
-				case 'createFile':
-					createFile(action.fileName, action.content, action.folderName);
-					break;
-				case 'editFile':
-					editFile(action.fileName, action.content);
-					break;
-				case 'summary':
-					vscode.window.showInformationMessage(action.content);
-					break;
-				default:
-					console.error("Unknown action type:", action.type);
-			}
-		});
-		console.log("Actions processed successfully.");
-	} else {
-		console.error("No actions found in JSON response.");
-	}
+// Helper function to get file statistics (could be expanded to include more detailed info)
+function getFileDetails(filePath) {
+	const stats = fs.statSync(filePath);
+	return {
+		size: stats.size,
+		lastModified: stats.mtime,
+		isDirectory: stats.isDirectory()
+	};
 }
 
+// Recursive function to read directory contents
+async function buildFileStructureTree(dirPath) {
+	const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+	const tree = { path: dirPath, folders: [], files: [] };
 
+	for (let entry of entries) {
+		const entryPath = path.join(dirPath, entry.name);
+		if (entry.isDirectory()) {
+			tree.folders.push(await buildFileStructureTree(entryPath));
+		} else {
+			tree.files.push({
+				name: entry.name,
+				details: getFileDetails(entryPath)
+			});
+		}
+	}
+
+	return tree;
+}
+
+// Get the effective root path from the workspace
 function getEffectiveRootPath() {
 	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
 		return vscode.workspace.workspaceFolders[0].uri.fsPath;
 	} else {
 		vscode.window.showErrorMessage("No workspace folder is open. Please open a folder to use this extension.");
-		return null; // Or handle differently if you must operate without a workspace
+		return null;  // Or handle differently if you must operate without a workspace
 	}
 }
-
+// get all folders and files in the workspace
+function getWorkspaceFiles(rootPath) {
+	let workspaceFiles = [];
+	let files = getAllFiles(rootPath);
+	workspaceFiles.push(...files);
+	return workspaceFiles;
+}
 function createFolder(folderName) {
 	const rootPath = getEffectiveRootPath();
 	if (!rootPath) return null;
@@ -294,53 +343,63 @@ const activate = async (context) => {
 		const outputDirectory = ensureDirectoryStructure();
 		const panel = vscode.window.createWebviewPanel('chat', 'Chat with Code Collaborator', vscode.ViewColumn.One, { enableScripts: true });
 
-		if (!assistantId) {
-			try {
-				assistantId = await createAssistant();
-				context.globalState.update(`${projectId}-assistantId`, assistantId);
-			} catch (error) {
-				vscode.window.showErrorMessage("Failed to create assistant: " + error.message);
-				return;
-			}
-		}
 
-		// if (!threadId) {
-		// 	try {
-		// 		const response = await createThreadAndRun(assistantId, "Initialize session", []);
-		// 		if (response && response.threadId) {
-		// 			threadId = response.threadId;
-		// 			context.globalState.update(`${projectId}-threadId`, threadId);
-		// 		} else {
-		// 			throw new Error("Thread creation failed, no threadId returned");
-		// 		}
-		// 	} catch (error) {
-		// 		vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
-		// 		return;  // Stop further execution if thread creation fails
-		// 	}
-		// }
-		if (threadId) {
-			await displayThreadMessages(threadId, panel);
-		}
 		panel.webview.onDidReceiveMessage(async message => {
-			try {
-				let response = null;
-				if (threadId) {
-					response = await sendMessageToThread(threadId, message.promptText, panel, context);
-				} else {
-					response = await handleCreateThreadAndRun(assistantId, message.promptText);
-				}
-				return response;
 
-			} catch (error) {
-				vscode.window.showErrorMessage('Error handling message: ' + error.message);
+			if (message.command === 'fetchLastResponse' && threadId) {
+				// Handle the 'fetchLastResponse' command here
+				const lastResponse = await getLastMessage(threadId);
+				console.log('Last response:', lastResponse);
+				// Do something with the lastResponse, e.g., display it in the webview
+				panel.webview.postMessage({ type: 'lastResponse', content: lastResponse });
+			}
+			if (!threadId) {
+				try {
+					if (!assistantId) {
+						try {
+							assistantId = await createAssistant();
+							context.globalState.update(`${projectId}-assistantId`, assistantId);
+						} catch (error) {
+							vscode.window.showErrorMessage("Failed to create assistant: " + error.message);
+							return;
+						}
+					}
+					const response = await openai.beta.threads.create();
+					console.log('Thread created "response":', response);
+					if (response) {
+						threadId = response.id;
+						context.globalState.update(`${projectId}-threadId`, threadId);
+					} else {
+						throw new Error("Thread creation failed, no threadId returned");
+					}
+				} catch (error) {
+					vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
+					return;  // Stop further execution if thread creation fails
+				}
+			}
+
+			if (message.promptText) {
+				try {
+					let response = null;
+					if (threadId) {
+						response = await sendMessageToThread(threadId, message.promptText, panel, context);
+					} else {
+						response = await handleCreateThreadAndRun(assistantId, message.promptText);
+					}
+					return response;
+				} catch (error) {
+					vscode.window.showErrorMessage('Error handling message: ' + error.message);
+				}
 			}
 		}, undefined, context.subscriptions);
 
 		const fileData = getWorkspaceFiles(outputDirectory);
 		panel.webview.html = getWebviewContent(JSON.stringify(fileData));
+
 	});
 
 	context.subscriptions.push(disposable);
+
 };
 
 
@@ -351,7 +410,6 @@ async function displayThreadMessages(threadId, panel) {
 		if (response.data && Array.isArray(response.data)) {
 			let lastAssistantMessage = response.data[0].content[0].text.value
 			if (lastAssistantMessage) {
-				handleResponse(lastAssistantMessage, panel);  // Call handleResponse here
 				return lastAssistantMessage;
 			}
 		}
@@ -361,6 +419,42 @@ async function displayThreadMessages(threadId, panel) {
 	}
 }
 
+const getLastMessage = async (threadId) => {
+	try {
+		const thread = await openai.beta.threads.messages.list(threadId)
+		const lastMessage = thread.data[0].content[0].text.value
+		const summary = handleParsing(lastMessage)
+		console.log('Summary in getLAstmessage:', summary)
+		return summary
+
+	} catch (error) {
+
+		console.error("Failed to retrieve and display messages from thread:", error);
+		vscode.window.showErrorMessage('Failed to display messages: ' + error.message);
+	}
+}
+
+
+function handleParsing(rawResponse) {
+	try {
+		const data = JSON.parse(extractJson(rawResponse));  // Assuming extractJson handles non-JSON cases internally
+		if (data.actions) {
+			let content = null;
+			console.log('Data.actions in handleParsing:', data.actions)
+			data.actions.forEach(action => {
+				if (action.type === 'summary') {
+					content = action.content;
+					console.log('Summary:', content);
+				}
+			});
+			return content;
+		}
+		// Optionally update the UI with a summary or update if needed
+	} catch (error) {
+		vscode.window.showErrorMessage("Failed to process response: " + error.message);
+		console.error("Failed to process response:", error);
+	}
+}
 function handleResponse(rawResponse, panel) {
 	try {
 		const data = JSON.parse(extractJson(rawResponse));  // Assuming extractJson handles non-JSON cases internally
@@ -445,6 +539,14 @@ function getWebviewContent(fileDataJSON) {
         window.addEventListener('message', event => {
 			const message = event.data;
 			switch (message.type) {
+				case 'lastResponse':
+					if (message.content) {
+						const responseElement = document.createElement('div');
+						responseElement.textContent = message.content;
+						responseContainer.appendChild(responseElement);
+					} 
+					
+					break
 				case 'response':
 					const responseContainer = document.getElementById('responseContainer');
                 const responseElement = document.createElement('p');
@@ -460,7 +562,19 @@ function getWebviewContent(fileDataJSON) {
 					break;
 			}
 		});
-		
+		document.addEventListener('DOMContentLoaded', function() {
+			const previousState = vscode.getState();
+			let lastResponse;
+
+			if (previousState) {
+				lastResponse = previousState.lastResponse;
+			}
+
+			vscode.postMessage({
+				command: 'fetchLastResponse',
+				lastResponse: lastResponse
+			});
+		});
 		
 
         function sendMessage() {
@@ -480,12 +594,6 @@ function getWebviewContent(fileDataJSON) {
 
 
 
-function getWorkspaceFiles(rootPath) {
-	let workspaceFiles = [];
-	let files = getAllFiles(rootPath);
-	workspaceFiles.push(...files);
-	return workspaceFiles;
-}
 
 function getAllFiles(dirPath, arrayOfFiles = []) {
 	const fs = require('fs');
