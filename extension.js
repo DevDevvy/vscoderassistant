@@ -5,7 +5,7 @@ const path = require('path');
 <<<<<<< HEAD
 
 const crypto = require('crypto');
-let threadId;
+
 
 =======
 
@@ -63,12 +63,16 @@ async function createAssistant() {
 <<<<<<< HEAD
 			You can make multiple files in a folder if needed. The response must be a single JSON object. Any general messages or feedback should be 
 			included in the "summary" section of the JSON structure as well as the summary of the actions taken and the code created. Take time to think about your answer.
+<<<<<<< HEAD
 			Try to determine if the code needs a new folder or can be put in an existing folder. Make sure all of your function names are highly semantic in order to give the best
 			idea of what that function does. Include a comment at the top of the file to summarize what is in the file. Start your response with '{"actions": [{' and include the actions you suggest to perform.
 =======
 			The response must be a single JSON object. Any general messages or feedback should be included in the "summary" section of the JSON structure.
 			Start your response with '{"actions": [{' and include the actions you want the assistant to perform.
 >>>>>>> parent of 70c2006 (agent working and outputting folders/files)
+=======
+			Try to determine if the code needs a new folder or can be put in an existing folder. Start your response with '{"actions": [{' and include the actions you suggest to perform.
+>>>>>>> parent of 39a0508 (ui better showing last task summary in project)
 			`,
 			response_format: { type: "json_object" }
 		});
@@ -203,6 +207,7 @@ function extractJson(response) {
 	throw new Error("No JSON found in the response or failed to extract JSON.");
 }
 
+<<<<<<< HEAD
 
 function processActions(data) {
 	if (data.actions) {
@@ -236,6 +241,39 @@ return tree;
 =======
 >>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 
+=======
+// Helper function to get file statistics (could be expanded to include more detailed info)
+function getFileDetails(filePath) {
+	const stats = fs.statSync(filePath);
+	return {
+		size: stats.size,
+		lastModified: stats.mtime,
+		isDirectory: stats.isDirectory()
+	};
+}
+
+// Recursive function to read directory contents
+async function buildFileStructureTree(dirPath) {
+	const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+	const tree = { path: dirPath, folders: [], files: [] };
+
+	for (let entry of entries) {
+		const entryPath = path.join(dirPath, entry.name);
+		if (entry.isDirectory()) {
+			tree.folders.push(await buildFileStructureTree(entryPath));
+		} else {
+			tree.files.push({
+				name: entry.name,
+				details: getFileDetails(entryPath)
+			});
+		}
+	}
+
+	return tree;
+}
+
+// Get the effective root path from the workspace
+>>>>>>> parent of 39a0508 (ui better showing last task summary in project)
 function getEffectiveRootPath() {
 	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
 		return vscode.workspace.workspaceFolders[0].uri.fsPath;
@@ -309,7 +347,7 @@ const activate = async (context) => {
 	let disposable = vscode.commands.registerCommand('extension.openChat', async function () {
 		const projectId = getProjectIdentifier();
 		let assistantId = context.globalState.get(`${projectId}-assistantId`);
-		threadId = context.globalState.get(`${projectId}-threadId`);
+		let threadId = context.globalState.get(`${projectId}-threadId`);
 		const outputDirectory = ensureDirectoryStructure();
 		const panel = vscode.window.createWebviewPanel('chat', 'Chat with Code Collaborator', vscode.ViewColumn.One, { enableScripts: true });
 
@@ -403,46 +441,46 @@ function getWebviewContent(fileDataJSON) {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            margin: 0;
-            padding: 10px;
-            box-sizing: border-box;
-        }
-        #fileList {
-            margin-bottom: 10px;
-            height: 40px;
-        }
-        #responseContainer {
-            flex-grow: 10;
-            margin-bottom: 10px;
-            padding: 8px;
-            border: 1px solid #ccc;
-            background-color: #f9f9f9;
-            overflow: auto;
-        }
-        #chatInput {
-            flex-grow: 1;
-            margin-bottom: 10px;
-            padding: 8px;
-            height: 20%;
-        }
-        button {
-            padding: 8px;
-            background-color: #007ACC;
-            color: white;
-            border: none;
-            cursor: pointer;
-            height: 40px;
-        }
-        button:hover {
-            background-color: #005A9C;
-        }
-    </style>
+	<style>
+		body {
+			font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+			display: flex;
+			flex-direction: column;
+			height: 100vh;
+			margin: 0; /* Remove margin to use full viewport */
+			padding: 10px;
+			box-sizing: border-box; /* Include padding in the height calculation */
+		}
+		#fileList {
+			margin-bottom: 10px;
+			height: 40px; /* Fixed height for the dropdown */
+		}
+		#responseContainer {
+			flex-grow: 10; 
+			margin-bottom: 10px;
+			padding: 8px;
+			border: 1px solid #ccc;
+			background-color: #f9f9f9;
+			overflow: auto; /* Allows scrolling inside the container if needed */
+		}
+		#chatInput {
+			flex-grow: 1;
+			margin-bottom: 10px;
+			padding: 8px;
+			height: 20%; /* Adjust as needed to not require scrolling */
+		}
+		button {
+			padding: 8px;
+			background-color: #007ACC;
+			color: white;
+			border: none;
+			cursor: pointer;
+			height: 40px; /* Fixed height for the button */
+		}
+		button:hover {
+			background-color: #005A9C;
+		}
+	</style>
 </head>
 <body>
     <select id="fileList">
@@ -464,6 +502,17 @@ function getWebviewContent(fileDataJSON) {
         window.addEventListener('message', event => {
 			const message = event.data;
 			switch (message.type) {
+<<<<<<< HEAD
+=======
+				case 'lastResponse':
+					if (message.content) {
+						const responseElement = document.createElement('div');
+						responseElement.textContent = message.content;
+						responseContainer.appendChild(responseElement);
+					} 
+					
+					break
+>>>>>>> parent of 39a0508 (ui better showing last task summary in project)
 				case 'response':
 					const responseContainer = document.getElementById('responseContainer');
                 const responseElement = document.createElement('p');
@@ -479,7 +528,23 @@ function getWebviewContent(fileDataJSON) {
 					break;
 			}
 		});
+<<<<<<< HEAD
 		
+=======
+		document.addEventListener('DOMContentLoaded', function() {
+			const previousState = vscode.getState();
+			let lastResponse;
+
+			if (previousState) {
+				lastResponse = previousState.lastResponse;
+			}
+
+			vscode.postMessage({
+				command: 'fetchLastResponse',
+				lastResponse: lastResponse
+			});
+		});
+>>>>>>> parent of 39a0508 (ui better showing last task summary in project)
 		
 
         function sendMessage() {
@@ -491,39 +556,6 @@ function getWebviewContent(fileDataJSON) {
             });
             input.value = '';
         }
-
-        window.addEventListener('message', event => {
-			const message = event.data;
-			const responseContainer = document.getElementById('responseContainer');
-			let responseElement; 
-		
-			switch (message.type) {
-				case 'lastResponse':
-					responseElement = document.createElement('div');
-					responseElement.textContent = "The last task we completed was: " + message.content;
-					responseContainer.appendChild(responseElement);
-					break;
-				case 'response':
-					responseElement = document.createElement('p');
-					responseElement.textContent = message.content;
-					responseContainer.appendChild(responseElement);
-					break;
-				case 'error':
-					const errorElement = document.createElement('p');
-					errorElement.textContent = 'Error: ' + message.content;
-					errorElement.style.color = 'red';
-					responseContainer.append(errorElement); 
-					break;
-			}
-        });
-
-        // Fetch the last response on document load
-        document.addEventListener('DOMContentLoaded', function() {
-            vscode.postMessage({
-                command: 'fetchLastResponse',
-                threadId: '${threadId}' // Pass the thread ID dynamically
-            });
-        });
     </script>
 </body>
 </html>`;
@@ -541,6 +573,7 @@ function getWorkspaceFiles(rootPath) {
 	workspaceFiles.push(...files);
 	return workspaceFiles;
 }
+
 
 function getAllFiles(dirPath, arrayOfFiles = []) {
 	const fs = require('fs');
