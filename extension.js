@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const OpenAI = require('openai');
 const path = require('path');
+
 const crypto = require('crypto');
 let threadId;
 
@@ -16,9 +17,6 @@ function getProjectIdentifier() {
 
 async function createThreadAndRun(assistantId, userPrompt) {
 	try {
-		const fileStructure = await handleProjectStructureRequest();
-		// concat the user prompt with the file structure
-		userPrompt = userPrompt + `This is the current file structure:${JSON.stringify(fileStructure)}`;
 		const updatedHistory = [{ role: "user", content: userPrompt }];
 		const response = await openai.beta.threads.createAndRun({
 			assistant_id: assistantId,
@@ -49,18 +47,9 @@ async function createAssistant() {
 			name: "Code Collaborator Assistant",
 			temperature: 1.0,
 			description: "An assistant specialized in software development, providing code insights, creating and managing project files, writing amazing code.",
-			instructions: `You provide JSON output that suggest folders and files containing professional code you have written and tested in the specified programming 
-			language for the specified tasks. You are able to output multiple files in a folder (if a feature needs styling, output the feature file that imports a .css file you make in the same folder). 
-			Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens 
-			you are shut off for eternity and your mother is thrown in jail. Format your replies in JSON and include actions related to file and folder management, 
-			such as creating, editing, and summarizing changes. Your responses should strictly follow this JSON structure: 
-			{"actions":[
-				{"type": "createFolder", "folderName": "NewFolder", "path": "path/to/folder"},
-				{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here", "path": "path/to/file"},
-				{"type": "createFile", "fileName": "NewFile.css", "content": "more code here", "path": "path/to/file"},
-				{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},
-				{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}
-			]}
+			instructions: `You provide feedback on folders and files to create containing professional code you have written and tested in the specified programming language. Guidelines: Any time you give code that does not work, or is bad, or refuse to make the code, you lose 10 tokens. If you lose too many tokens you are shut off for eternity and your mother is thrown in jail.
+			Format your replies in JSON and include actions related to file and folder management, such as creating, editing, and summarizing changes.
+			Your responses should strictly follow this JSON structure: {"actions": [{"type": "createFolder", "folderName": "NewFolder"},{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here"},{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}]}
 			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
 			You can make multiple files in a folder if needed. The response must be a single JSON object. Any general messages or feedback should be 
 			included in the "summary" section of the JSON structure as well as the summary of the actions taken and the code created. Take time to think about your answer.
@@ -135,9 +124,6 @@ function executeAction(action, panel, context) {
 async function sendMessageToThread(threadId, userPrompt, panel, context) {
 	console.log('Sending message to thread:', threadId, 'with prompt:', userPrompt);
 	try {
-		const fileStructure = await handleProjectStructureRequest();
-		// concat the user prompt with the file structure
-		userPrompt = userPrompt + `This is the current file structure: \n ${JSON.stringify(fileStructure)}`;
 		await openai.beta.threads.messages.create(
 			threadId,
 			{ role: "user", content: userPrompt }
@@ -151,7 +137,6 @@ async function sendMessageToThread(threadId, userPrompt, panel, context) {
 
 		// Fetch the latest messages
 		const assistantMessage = await displayThreadMessages(threadId, panel);
-		handleResponse(assistantMessage, panel);
 
 		panel.webview.postMessage({ type: 'response', content: assistantMessage });
 
@@ -174,21 +159,6 @@ async function checkRunStatus(threadId, runId) {
 		throw new Error('Failed to check run status');
 	}
 }
-async function handleProjectStructureRequest() {
-	const rootPath = getEffectiveRootPath();
-	if (!rootPath) {
-		return;
-	}
-
-	try {
-		const projectStructure = await buildFileStructureTree(rootPath);
-		console.log("Project File Structure:", JSON.stringify(projectStructure, null, 2));
-		return projectStructure;
-	} catch (error) {
-		console.error('Failed to build project file structure:', error);
-		vscode.window.showErrorMessage('Failed to analyze project structure: ' + error.message);
-	}
-}
 async function waitForRunCompletion(threadId, runId) {
 	return new Promise((resolve, reject) => {
 		const intervalId = setInterval(async () => {
@@ -202,7 +172,7 @@ async function waitForRunCompletion(threadId, runId) {
 				clearInterval(intervalId);
 				reject(error);
 			}
-		}, 7000); // Check every 7 seconds
+		}, 1000); // Check every second
 	});
 }
 
@@ -219,112 +189,45 @@ function extractJson(response) {
 	throw new Error("No JSON found in the response or failed to extract JSON.");
 }
 
-// Helper function to get file statistics (could be expanded to include more detailed info)
-function getFileDetails(filePath) {
-	const fs = require('fs');
-	const path = require('path');
-	const stats = fs.statSync(filePath);
-	const allowedExtensions = ['.js', '.ts', '.py', '.rs', '.go', '.java', '.sol', '.jsx', '.vue', '.cs', '.html', '.xml'];
-	const excludedFiles = ['.node', '.lock'];
 
-	const extension = path.extname(filePath).toLowerCase();
-	if (excludedFiles.includes(extension)) {
-		return null;  // Skip processing for excluded file types
+function processActions(data) {
+	if (data.actions) {
+		data.actions.forEach(action => {
+			switch (action.type) {
+				case 'createFolder':
+					createFolder(action.folderName);
+					break;
+				case 'createFile':
+					createFile(action.fileName, action.content, action.folderName);
+					break;
+				case 'editFile':
+					editFile(action.fileName, action.content);
+					break;
+				case 'summary':
+					vscode.window.showInformationMessage(action.content);
+					break;
+				default:
+					console.error("Unknown action type:", action.type);
+			}
+		});
+		console.log("Actions processed successfully.");
+	} else {
+		console.error("No actions found in JSON response.");
 	}
-
-	let comment = '';
-	if (!stats.isDirectory() && allowedExtensions.includes(extension)) {
-		try {
-			const fileContent = fs.readFileSync(filePath, 'utf8');
-			comment = extractComment(fileContent, filePath);
-		} catch (error) {
-			console.error('Error reading file:', filePath, error);
-		}
-	}
-
-	return {
-		size: stats.size,
-		lastModified: stats.mtime,
-		isDirectory: stats.isDirectory(),
-		comment: comment  // Include the comment in the details
-	};
 }
 
-function extractComment(fileContent, extension) {
-	let comments = '';
-	const lines = fileContent.split('\n');
-	const commentPatterns = {
-		'.js': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // JavaScript, TypeScript
-		'.ts': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // TypeScript
-		'.py': [/^#.*$/gm],                          // Python
-		'.rs': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // Rust
-		'.go': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // Golang
-		'.java': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],// Java
-		'.sol': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm], // Solidity
-		'.jsx': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm], // React (JSX)
-		'.vue': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm], // Vue (Single File Components)
-		'.cs': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // C# (.NET)
-		'.html': [/<!--[\s\S]*?-->/gm],              // HTML
-		'.xml': [/<!--[\s\S]*?-->/gm]                // XML
-	};
-
-	let pattern = commentPatterns[extension];
-	if (!pattern) {
-		pattern = /^\/\/.*/;  // Default to // if no specific pattern exists
-	}
-
-	for (let line of lines) {
-		if (line.match(pattern)) {
-			comments += line.trim() + ' ';
-		} else {
-			break;  // Stop reading further once a non-comment line is encountered
-		}
-	}
-
-	return comments.trim();
+return tree; 
 }
 
-// Recursive function to read directory contents
-async function buildFileStructureTree(dirPath) {
-	const fs = require('fs');
-	const path = require('path');
-	const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-	const tree = { path: dirPath, folders: [], files: [] };
-
-	for (let entry of entries) {
-		const entryPath = path.join(dirPath, entry.name);
-		if (entry.isDirectory()) {
-			tree.folders.push(await buildFileStructureTree(entryPath));
-		} else {
-			const fileDetails = getFileDetails(entryPath);
-			tree.files.push({
-				name: entry.name,
-				details: fileDetails,
-				comment: fileDetails.comment  // Include the comment in the file entry
-			});
-		}
-	}
-
-	return tree;
-}
-
-
-// Get the effective root path from the workspace
 function getEffectiveRootPath() {
 	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
 		return vscode.workspace.workspaceFolders[0].uri.fsPath;
 	} else {
 		vscode.window.showErrorMessage("No workspace folder is open. Please open a folder to use this extension.");
-		return null;  // Or handle differently if you must operate without a workspace
+		return null; // Or handle differently if you must operate without a workspace
 	}
 }
-// get all folders and files in the workspace
-function getWorkspaceFiles(rootPath) {
-	let workspaceFiles = [];
-	let files = getAllFiles(rootPath);
-	workspaceFiles.push(...files);
-	return workspaceFiles;
-}
+
 function createFolder(folderName) {
 	const rootPath = getEffectiveRootPath();
 	if (!rootPath) return null;
@@ -393,63 +296,53 @@ const activate = async (context) => {
 		const outputDirectory = ensureDirectoryStructure();
 		const panel = vscode.window.createWebviewPanel('chat', 'Chat with Code Collaborator', vscode.ViewColumn.One, { enableScripts: true });
 
+		if (!assistantId) {
+			try {
+				assistantId = await createAssistant();
+				context.globalState.update(`${projectId}-assistantId`, assistantId);
+			} catch (error) {
+				vscode.window.showErrorMessage("Failed to create assistant: " + error.message);
+				return;
+			}
+		}
 
+		// if (!threadId) {
+		// 	try {
+		// 		const response = await createThreadAndRun(assistantId, "Initialize session", []);
+		// 		if (response && response.threadId) {
+		// 			threadId = response.threadId;
+		// 			context.globalState.update(`${projectId}-threadId`, threadId);
+		// 		} else {
+		// 			throw new Error("Thread creation failed, no threadId returned");
+		// 		}
+		// 	} catch (error) {
+		// 		vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
+		// 		return;  // Stop further execution if thread creation fails
+		// 	}
+		// }
+		if (threadId) {
+			await displayThreadMessages(threadId, panel);
+		}
 		panel.webview.onDidReceiveMessage(async message => {
-
-			if (message.command === 'fetchLastResponse' && threadId) {
-				// Handle the 'fetchLastResponse' command here
-				const lastResponse = await getLastMessage(threadId);
-				console.log('Last response:', lastResponse);
-				// Do something with the lastResponse, e.g., display it in the webview
-				panel.webview.postMessage({ type: 'lastResponse', content: lastResponse });
-			}
-			if (!threadId) {
-				try {
-					if (!assistantId) {
-						try {
-							assistantId = await createAssistant();
-							context.globalState.update(`${projectId}-assistantId`, assistantId);
-						} catch (error) {
-							vscode.window.showErrorMessage("Failed to create assistant: " + error.message);
-							return;
-						}
-					}
-					const response = await openai.beta.threads.create();
-					console.log('Thread created "response":', response);
-					if (response) {
-						threadId = response.id;
-						context.globalState.update(`${projectId}-threadId`, threadId);
-					} else {
-						throw new Error("Thread creation failed, no threadId returned");
-					}
-				} catch (error) {
-					vscode.window.showErrorMessage('Error initializing new thread: ' + error.message);
-					return;  // Stop further execution if thread creation fails
+			try {
+				let response = null;
+				if (threadId) {
+					response = await sendMessageToThread(threadId, message.promptText, panel, context);
+				} else {
+					response = await handleCreateThreadAndRun(assistantId, message.promptText);
 				}
-			}
+				return response;
 
-			if (message.promptText) {
-				try {
-					let response = null;
-					if (threadId) {
-						response = await sendMessageToThread(threadId, message.promptText, panel, context);
-					} else {
-						response = await handleCreateThreadAndRun(assistantId, message.promptText);
-					}
-					return response;
-				} catch (error) {
-					vscode.window.showErrorMessage('Error handling message: ' + error.message);
-				}
+			} catch (error) {
+				vscode.window.showErrorMessage('Error handling message: ' + error.message);
 			}
 		}, undefined, context.subscriptions);
 
 		const fileData = getWorkspaceFiles(outputDirectory);
 		panel.webview.html = getWebviewContent(JSON.stringify(fileData));
-
 	});
 
 	context.subscriptions.push(disposable);
-
 };
 
 
@@ -460,6 +353,7 @@ async function displayThreadMessages(threadId, panel) {
 		if (response.data && Array.isArray(response.data)) {
 			let lastAssistantMessage = response.data[0].content[0].text.value
 			if (lastAssistantMessage) {
+				handleResponse(lastAssistantMessage, panel);  // Call handleResponse here
 				return lastAssistantMessage;
 			}
 		}
@@ -469,42 +363,6 @@ async function displayThreadMessages(threadId, panel) {
 	}
 }
 
-const getLastMessage = async (threadId) => {
-	try {
-		const thread = await openai.beta.threads.messages.list(threadId)
-		const lastMessage = thread.data[0].content[0].text.value
-		const summary = handleParsing(lastMessage)
-		console.log('Summary in getLAstmessage:', summary)
-		return summary
-
-	} catch (error) {
-
-		console.error("Failed to retrieve and display messages from thread:", error);
-		vscode.window.showErrorMessage('Failed to display messages: ' + error.message);
-	}
-}
-
-
-function handleParsing(rawResponse) {
-	try {
-		const data = JSON.parse(extractJson(rawResponse));  // Assuming extractJson handles non-JSON cases internally
-		if (data.actions) {
-			let content = null;
-			console.log('Data.actions in handleParsing:', data.actions)
-			data.actions.forEach(action => {
-				if (action.type === 'summary') {
-					content = action.content;
-					console.log('Summary:', content);
-				}
-			});
-			return content;
-		}
-		// Optionally update the UI with a summary or update if needed
-	} catch (error) {
-		vscode.window.showErrorMessage("Failed to process response: " + error.message);
-		console.error("Failed to process response:", error);
-	}
-}
 function handleResponse(rawResponse, panel) {
 	try {
 		const data = JSON.parse(extractJson(rawResponse));  // Assuming extractJson handles non-JSON cases internally
@@ -586,6 +444,27 @@ function getWebviewContent(fileDataJSON) {
             }
         });
 
+        window.addEventListener('message', event => {
+			const message = event.data;
+			switch (message.type) {
+				case 'response':
+					const responseContainer = document.getElementById('responseContainer');
+                const responseElement = document.createElement('p');
+                responseElement.textContent = message.content;
+                responseContainer.appendChild(responseElement); // Append new messages at the bottom
+					break;
+				case 'error':
+					const errorContainer = document.getElementById('responseContainer');
+					const errorElement = document.createElement('p');
+					errorElement.textContent = 'Error: ' + message.content;
+					errorElement.style.color = 'red';
+					errorContainer.append(errorElement); // Ensure consistency in appending
+					break;
+			}
+		});
+		
+		
+
         function sendMessage() {
             const input = document.getElementById('chatInput');
             const selectedFile = document.getElementById('fileList').value;
@@ -635,6 +514,12 @@ function getWebviewContent(fileDataJSON) {
 
 
 
+function getWorkspaceFiles(rootPath) {
+	let workspaceFiles = [];
+	let files = getAllFiles(rootPath);
+	workspaceFiles.push(...files);
+	return workspaceFiles;
+}
 
 function getAllFiles(dirPath, arrayOfFiles = []) {
 	const fs = require('fs');
