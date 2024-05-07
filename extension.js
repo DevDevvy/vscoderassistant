@@ -14,17 +14,6 @@ function getProjectIdentifier() {
 	return crypto.createHash('md5').update(rootPath).digest('hex');
 }
 
-async function createThread() {
-	try {
-		const response = await openai.beta.threads.create();
-		console.log('Thread created:', response);
-		return response;
-	} catch (error) {
-		console.error('Failed to create thread:', error);
-		throw new Error('Failed to create thread');
-	}
-}
-
 async function createThreadAndRun(assistantId, userPrompt) {
 	try {
 		const fileStructure = await handleProjectStructureRequest();
