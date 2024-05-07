@@ -2,10 +2,19 @@ const vscode = require('vscode');
 const fs = require('fs');
 const OpenAI = require('openai');
 const path = require('path');
+<<<<<<< HEAD
 
 const crypto = require('crypto');
 let threadId;
 
+=======
+
+const crypto = require('crypto');
+
+let context = {
+	lastFolderPath: null
+};
+>>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 function getProjectIdentifier() {
 	if (!vscode.workspace.workspaceFolders) {
@@ -51,10 +60,15 @@ async function createAssistant() {
 			Format your replies in JSON and include actions related to file and folder management, such as creating, editing, and summarizing changes.
 			Your responses should strictly follow this JSON structure: {"actions": [{"type": "createFolder", "folderName": "NewFolder"},{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here"},{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file."},{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}]}
 			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
+<<<<<<< HEAD
 			You can make multiple files in a folder if needed. The response must be a single JSON object. Any general messages or feedback should be 
 			included in the "summary" section of the JSON structure as well as the summary of the actions taken and the code created. Take time to think about your answer.
 			Try to determine if the code needs a new folder or can be put in an existing folder. Make sure all of your function names are highly semantic in order to give the best
 			idea of what that function does. Include a comment at the top of the file to summarize what is in the file. Start your response with '{"actions": [{' and include the actions you suggest to perform.
+=======
+			The response must be a single JSON object. Any general messages or feedback should be included in the "summary" section of the JSON structure.
+			Start your response with '{"actions": [{' and include the actions you want the assistant to perform.
+>>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 			`,
 			response_format: { type: "json_object" }
 		});
@@ -216,8 +230,11 @@ function processActions(data) {
 	}
 }
 
+<<<<<<< HEAD
 return tree; 
 }
+=======
+>>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 
 function getEffectiveRootPath() {
 	if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -514,6 +531,10 @@ function getWebviewContent(fileDataJSON) {
 
 
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> parent of 70c2006 (agent working and outputting folders/files)
 function getWorkspaceFiles(rootPath) {
 	let workspaceFiles = [];
 	let files = getAllFiles(rootPath);
