@@ -3,7 +3,7 @@ const fs = require('fs');
 const OpenAI = require('openai');
 const path = require('path');
 const crypto = require('crypto');
-
+let threadId;
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 function getProjectIdentifier() {
@@ -64,7 +64,8 @@ async function createAssistant() {
 			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
 			You can make multiple files in a folder if needed. The response must be a single JSON object. Any general messages or feedback should be 
 			included in the "summary" section of the JSON structure as well as the summary of the actions taken and the code created. Take time to think about your answer.
-			Try to determine if the code needs a new folder or can be put in an existing folder. Start your response with '{"actions": [{' and include the actions you suggest to perform.
+			Try to determine if the code needs a new folder or can be put in an existing folder. Make sure all of your function names are highly semantic in order to give the best
+			idea of what that function does. Include a comment at the top of the file to summarize what is in the file. Start your response with '{"actions": [{' and include the actions you suggest to perform.
 			`,
 			response_format: { type: "json_object" }
 		});
@@ -220,16 +221,73 @@ function extractJson(response) {
 
 // Helper function to get file statistics (could be expanded to include more detailed info)
 function getFileDetails(filePath) {
+	const fs = require('fs');
+	const path = require('path');
 	const stats = fs.statSync(filePath);
+	const allowedExtensions = ['.js', '.ts', '.py', '.rs', '.go', '.java', '.sol', '.jsx', '.vue', '.cs', '.html', '.xml'];
+	const excludedFiles = ['.node', '.lock'];
+
+	const extension = path.extname(filePath).toLowerCase();
+	if (excludedFiles.includes(extension)) {
+		return null;  // Skip processing for excluded file types
+	}
+
+	let comment = '';
+	if (!stats.isDirectory() && allowedExtensions.includes(extension)) {
+		try {
+			const fileContent = fs.readFileSync(filePath, 'utf8');
+			comment = extractComment(fileContent, filePath);
+		} catch (error) {
+			console.error('Error reading file:', filePath, error);
+		}
+	}
+
 	return {
 		size: stats.size,
 		lastModified: stats.mtime,
-		isDirectory: stats.isDirectory()
+		isDirectory: stats.isDirectory(),
+		comment: comment  // Include the comment in the details
 	};
+}
+
+function extractComment(fileContent, extension) {
+	let comments = '';
+	const lines = fileContent.split('\n');
+	const commentPatterns = {
+		'.js': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // JavaScript, TypeScript
+		'.ts': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // TypeScript
+		'.py': [/^#.*$/gm],                          // Python
+		'.rs': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // Rust
+		'.go': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // Golang
+		'.java': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],// Java
+		'.sol': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm], // Solidity
+		'.jsx': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm], // React (JSX)
+		'.vue': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm], // Vue (Single File Components)
+		'.cs': [/^\/\/.*/gm, /\/\*[\s\S]*?\*\//gm],  // C# (.NET)
+		'.html': [/<!--[\s\S]*?-->/gm],              // HTML
+		'.xml': [/<!--[\s\S]*?-->/gm]                // XML
+	};
+
+	let pattern = commentPatterns[extension];
+	if (!pattern) {
+		pattern = /^\/\/.*/;  // Default to // if no specific pattern exists
+	}
+
+	for (let line of lines) {
+		if (line.match(pattern)) {
+			comments += line.trim() + ' ';
+		} else {
+			break;  // Stop reading further once a non-comment line is encountered
+		}
+	}
+
+	return comments.trim();
 }
 
 // Recursive function to read directory contents
 async function buildFileStructureTree(dirPath) {
+	const fs = require('fs');
+	const path = require('path');
 	const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
 	const tree = { path: dirPath, folders: [], files: [] };
 
@@ -238,15 +296,18 @@ async function buildFileStructureTree(dirPath) {
 		if (entry.isDirectory()) {
 			tree.folders.push(await buildFileStructureTree(entryPath));
 		} else {
+			const fileDetails = getFileDetails(entryPath);
 			tree.files.push({
 				name: entry.name,
-				details: getFileDetails(entryPath)
+				details: fileDetails,
+				comment: fileDetails.comment  // Include the comment in the file entry
 			});
 		}
 	}
 
 	return tree;
 }
+
 
 // Get the effective root path from the workspace
 function getEffectiveRootPath() {
@@ -328,7 +389,7 @@ const activate = async (context) => {
 	let disposable = vscode.commands.registerCommand('extension.openChat', async function () {
 		const projectId = getProjectIdentifier();
 		let assistantId = context.globalState.get(`${projectId}-assistantId`);
-		let threadId = context.globalState.get(`${projectId}-threadId`);
+		threadId = context.globalState.get(`${projectId}-threadId`);
 		const outputDirectory = ensureDirectoryStructure();
 		const panel = vscode.window.createWebviewPanel('chat', 'Chat with Code Collaborator', vscode.ViewColumn.One, { enableScripts: true });
 
@@ -467,46 +528,46 @@ function getWebviewContent(fileDataJSON) {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
-	<style>
-		body {
-			font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-			display: flex;
-			flex-direction: column;
-			height: 100vh;
-			margin: 0; /* Remove margin to use full viewport */
-			padding: 10px;
-			box-sizing: border-box; /* Include padding in the height calculation */
-		}
-		#fileList {
-			margin-bottom: 10px;
-			height: 40px; /* Fixed height for the dropdown */
-		}
-		#responseContainer {
-			flex-grow: 10; 
-			margin-bottom: 10px;
-			padding: 8px;
-			border: 1px solid #ccc;
-			background-color: #f9f9f9;
-			overflow: auto; /* Allows scrolling inside the container if needed */
-		}
-		#chatInput {
-			flex-grow: 1;
-			margin-bottom: 10px;
-			padding: 8px;
-			height: 20%; /* Adjust as needed to not require scrolling */
-		}
-		button {
-			padding: 8px;
-			background-color: #007ACC;
-			color: white;
-			border: none;
-			cursor: pointer;
-			height: 40px; /* Fixed height for the button */
-		}
-		button:hover {
-			background-color: #005A9C;
-		}
-	</style>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            margin: 0;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        #fileList {
+            margin-bottom: 10px;
+            height: 40px;
+        }
+        #responseContainer {
+            flex-grow: 10;
+            margin-bottom: 10px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+            overflow: auto;
+        }
+        #chatInput {
+            flex-grow: 1;
+            margin-bottom: 10px;
+            padding: 8px;
+            height: 20%;
+        }
+        button {
+            padding: 8px;
+            background-color: #007ACC;
+            color: white;
+            border: none;
+            cursor: pointer;
+            height: 40px;
+        }
+        button:hover {
+            background-color: #005A9C;
+        }
+    </style>
 </head>
 <body>
     <select id="fileList">
@@ -525,47 +586,6 @@ function getWebviewContent(fileDataJSON) {
             }
         });
 
-        window.addEventListener('message', event => {
-			const message = event.data;
-			switch (message.type) {
-				case 'lastResponse':
-					if (message.content) {
-						const responseElement = document.createElement('div');
-						responseElement.textContent = message.content;
-						responseContainer.appendChild(responseElement);
-					} 
-					
-					break
-				case 'response':
-					const responseContainer = document.getElementById('responseContainer');
-                const responseElement = document.createElement('p');
-                responseElement.textContent = message.content;
-                responseContainer.appendChild(responseElement); // Append new messages at the bottom
-					break;
-				case 'error':
-					const errorContainer = document.getElementById('responseContainer');
-					const errorElement = document.createElement('p');
-					errorElement.textContent = 'Error: ' + message.content;
-					errorElement.style.color = 'red';
-					errorContainer.append(errorElement); // Ensure consistency in appending
-					break;
-			}
-		});
-		document.addEventListener('DOMContentLoaded', function() {
-			const previousState = vscode.getState();
-			let lastResponse;
-
-			if (previousState) {
-				lastResponse = previousState.lastResponse;
-			}
-
-			vscode.postMessage({
-				command: 'fetchLastResponse',
-				lastResponse: lastResponse
-			});
-		});
-		
-
         function sendMessage() {
             const input = document.getElementById('chatInput');
             const selectedFile = document.getElementById('fileList').value;
@@ -575,11 +595,43 @@ function getWebviewContent(fileDataJSON) {
             });
             input.value = '';
         }
+
+        window.addEventListener('message', event => {
+			const message = event.data;
+			const responseContainer = document.getElementById('responseContainer');
+			let responseElement; 
+		
+			switch (message.type) {
+				case 'lastResponse':
+					responseElement = document.createElement('div');
+					responseElement.textContent = "The last task we completed was: " + message.content;
+					responseContainer.appendChild(responseElement);
+					break;
+				case 'response':
+					responseElement = document.createElement('p');
+					responseElement.textContent = message.content;
+					responseContainer.appendChild(responseElement);
+					break;
+				case 'error':
+					const errorElement = document.createElement('p');
+					errorElement.textContent = 'Error: ' + message.content;
+					errorElement.style.color = 'red';
+					responseContainer.append(errorElement); 
+					break;
+			}
+        });
+
+        // Fetch the last response on document load
+        document.addEventListener('DOMContentLoaded', function() {
+            vscode.postMessage({
+                command: 'fetchLastResponse',
+                threadId: '${threadId}' // Pass the thread ID dynamically
+            });
+        });
     </script>
 </body>
 </html>`;
 }
-
 
 
 
