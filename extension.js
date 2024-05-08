@@ -57,7 +57,7 @@ async function createAssistant() {
 				{"type": "createFolder", "folderName": "NewFolder2", "path": "/NewFolder"},
 				{"type": "createFile", "fileName": "NewFile.txt", "content": "code goes here", "path": "/NewFolder2"},
 				{"type": "createFile", "fileName": "NewFile.css", "content": "more code here", "path": "path/to/file"},
-				{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file.", "path": "/pathToFolder/file"},
+				{"type": "editFile", "fileName": "ExistingFile.txt", "content": "Updated code of the file.", "path": "/pathToFolder/fileName.ext"},
 				{"type": "summary", "content": "Summary of tasks completed including files and folders managed, and code provided."}
 			]}
 			Additional Instructions: Use modern syntax and adhere to the latest file structure, coding, and security best practices in your response. 
@@ -121,11 +121,6 @@ function executeAction(action, panel, context) {
 			createFile(action.fileName, action.content, fullPath);
 			break;
 		case 'editFile':
-			// fullPath = action.path ? path.join(getEffectiveRootPath(), action.path) : null;
-			// if (!fullPath) {
-			// 	console.error("Path for file editing is not defined.");
-			// 	return;
-			// }
 			editFile(action.fileName, action.content, action.path);
 			break;
 		case 'summary':
@@ -296,27 +291,30 @@ async function createFile(fileName, content, folderPath) {
 
 
 function editFile(fileName, content, filePath) {
-	if (!filePath) {
+	const rootPath = getEffectiveRootPath();
+	const fullPath = path.isAbsolute(filePath) ? filePath : path.join(rootPath, filePath);
+
+	if (!fullPath) {
 		console.error("File path is not defined. Cannot edit file.");
 		vscode.window.showErrorMessage("File path is not defined. Cannot edit file.");
 		return;
 	}
 
 	// Check if the file exists before attempting to write
-	fs.access(filePath, fs.constants.F_OK, (err) => {
+	fs.access(fullPath, fs.constants.F_OK, (err) => {
 		if (err) {
 			console.error("Error accessing file:", err);
-			vscode.window.showErrorMessage("Error accessing file: " + filePath);
+			vscode.window.showErrorMessage("Error accessing file: " + fullPath);
 			return;
 		}
 
 		// Proceed with writing to the file if it exists
-		fs.writeFile(filePath, content, err => {
+		fs.writeFile(fullPath, content, err => {
 			if (err) {
 				console.error('Failed to edit file:', err);
 				vscode.window.showErrorMessage('Failed to edit file: ' + err.message);
 			} else {
-				vscode.window.showInformationMessage('File edited successfully: ' + filePath);
+				vscode.window.showInformationMessage('File edited successfully: ' + fullPath);
 			}
 		});
 	});
@@ -476,7 +474,8 @@ function getWebviewContent(fileDataJSON) {
 	</style>
 </head>
 <body>
-    <select id="fileList">
+    <select id="fileList" value="">
+	<option value="/" selected>Choose Specific File</option>
         ${JSON.parse(fileDataJSON).map(file => `<option value="${file}">${file}</option>`).join('')}
     </select>
     <div id="responseContainer">Responses will appear here...</div>
@@ -535,8 +534,6 @@ function getWorkspaceFiles(rootPath) {
 
 
 function getAllFiles(dirPath, arrayOfFiles = []) {
-	const fs = require('fs');
-	const path = require('path');
 	let files = fs.readdirSync(dirPath);
 
 	files.forEach(function (file) {
