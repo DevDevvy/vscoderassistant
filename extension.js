@@ -292,7 +292,7 @@ async function createFile(fileName, content, folderPath) {
 
 function editFile(fileName, content, filePath) {
 	const rootPath = getEffectiveRootPath();
-	const fullPath = path.isAbsolute(filePath) ? filePath : path.join(rootPath, filePath);
+	const fullPath = path.isAbsolute(filePath) ? filePath : path.join(rootPath, filePath, fileName);
 
 	if (!fullPath) {
 		console.error("File path is not defined. Cannot edit file.");
